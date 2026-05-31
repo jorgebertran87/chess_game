@@ -30,9 +30,16 @@ fi
 
 # --- Expose the game (copied to the Linux path /game) as C:\game.
 ln -sfn /game "$WINEPREFIX/drive_c/game"
-if [ ! -e "$WINEPREFIX/drive_c/game/game.exe" ]; then
-    echo "[run-game] ERROR: game not found at C:\\game" >&2
+
+# Detect the main game executable (the Unity player .exe, not the crash handler)
+# and the Unity product name (basename without .exe), used for the registry path.
+GAME_EXE=$(find /game -maxdepth 1 -name '*.exe' ! -iname 'UnityCrashHandler*' | head -1)
+if [ -z "$GAME_EXE" ]; then
+    echo "[run-game] ERROR: no game executable found in /game" >&2
+    exit 1
 fi
+GAME_BASENAME=$(basename "$GAME_EXE")
+PRODUCT="${GAME_BASENAME%.exe}"
 
 # --- Suppress the Mono installer dialog.
 if [ ! -f "$WINEPREFIX/.mono_suppressed" ]; then
@@ -46,7 +53,7 @@ fi
 PREF_SIG="${GAME_W}x${GAME_H}:${FS_MODE}"
 IS_FS=$([ "$FS_MODE" = "3" ] && echo 0 || echo 1)
 if [ "$(cat "$WINEPREFIX/.screen_prefs" 2>/dev/null)" != "$PREF_SIG" ]; then
-    UREG="HKCU\\Software\\DefaultCompany\\game"
+    UREG="HKCU\\Software\\DefaultCompany\\$PRODUCT"
     wine reg add "$UREG" /v "Screenmanager Fullscreen mode_h3630240806"   /t REG_DWORD /d "$FS_MODE" /f 2>/dev/null
     wine reg add "$UREG" /v "Screenmanager Is Fullscreen mode_h3981298716" /t REG_DWORD /d "$IS_FS"   /f 2>/dev/null
     wine reg add "$UREG" /v "Screenmanager Resolution Width_h182942802"    /t REG_DWORD /d "$GAME_W"  /f 2>/dev/null
@@ -78,5 +85,5 @@ WINE_BIN=$(command -v wine64 2>/dev/null || command -v wine 2>/dev/null || echo 
 MODE_NAME=$([ "$FS_MODE" = "3" ] && echo windowed || echo borderless)
 echo "[run-game] Launching game ($MODE_NAME ${GAME_W}x${GAME_H} in ${DESK_W}x${DESK_H} desktop)..."
 exec "$WINE_BIN" explorer "/desktop=game,${DESK_W}x${DESK_H}" \
-    "C:\\game\\game.exe" \
+    "C:\\game\\$GAME_BASENAME" \
     -screen-width "$GAME_W" -screen-height "$GAME_H" -screen-fullscreen "$SCREEN_FS"

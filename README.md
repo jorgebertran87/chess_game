@@ -1,6 +1,6 @@
-# the game — in the browser
+# Game — in the browser
 
-Runs the Windows Unity build of **the game** headlessly inside Docker
+Runs the Windows Unity build of the game headlessly inside Docker
 (via Wine) and streams it to your browser over noVNC. With a GPU exposed it
 renders on the Intel GPU through **DXVK** (Direct3D → Vulkan); otherwise it
 falls back to software rendering.
