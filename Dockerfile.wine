@@ -1,0 +1,82 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WINEDEBUG=-all
+ENV DISPLAY=:99
+ENV PATH="/opt/wine-stable/bin:$PATH"
+ENV MESA_GL_VERSION_OVERRIDE=4.5
+ENV MESA_GLSL_VERSION_OVERRIDE=450
+ENV LIBGL_ALWAYS_SOFTWARE=0
+# Point Vulkan loader directly to the Intel ANV driver
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json
+ENV MESA_LOADER_DRIVER_OVERRIDE=iris
+
+# Enable 32-bit and install Wine + full Mesa GPU stack + display tools
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget gnupg ca-certificates \
+        libgl1-mesa-dri libgl1-mesa-dri:i386 \
+        libgl1-mesa-glx libgl1-mesa-glx:i386 \
+        mesa-vulkan-drivers mesa-vulkan-drivers:i386 \
+        mesa-utils \
+        libvulkan1 libvulkan1:i386 \
+        vulkan-tools \
+        libegl-mesa0 libegl1 \
+        libdrm-intel1 \
+        libdrm2 libdrm2:i386 \
+        xvfb \
+        x11-utils x11vnc openbox novnc websockify \
+        winetricks cabextract \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add WineHQ repo and install Wine stable
+RUN wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+    wget -NP /etc/apt/sources.list.d/ \
+        https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
+    apt-get update && \
+    apt-get install -y --install-recommends winehq-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download DXVK at build time (avoids slow runtime download)
+ENV DXVK_VERSION=1.10.3
+RUN wget -q "https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VERSION}/dxvk-${DXVK_VERSION}.tar.gz" \
+        -O /tmp/dxvk.tar.gz && \
+    tar -xf /tmp/dxvk.tar.gz -C /opt && \
+    ls /opt/dxvk-${DXVK_VERSION}/ && \
+    rm /tmp/dxvk.tar.gz
+
+
+# DXVK is pre-downloaded; prefix init and DXVK install happen at runtime
+# so Wine has a real display and correct WINEARCH=win64 from the start
+
+# Null ALSA device — stops Wine from blocking on missing audio hardware
+RUN echo 'pcm.default null\nctl.default null' > /etc/asound.conf
+
+# GPU display stack: a headless Wayland compositor (sway/wlroots) drives the
+# Intel *render node* (no DRM master needed, so it coexists with the host's
+# compositor) and runs Xwayland — a real X server exposing DRI3 + Present, which
+# is what DXVK needs to render on the GPU. wayvnc captures the sway output; grim
+# is handy for screenshots. A traditional Xorg+modesetting server can't be used
+# here: it needs DRM master, which the host GNOME session already holds.
+# (Separate layer so the large Wine/Mesa layer above stays cached.)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        sway xwayland wayvnc grim \
+    && rm -rf /var/lib/apt/lists/*
+
+# Unprivileged user for sway/Xwayland/Wine (sway refuses to run as root).
+RUN useradd -m -s /bin/bash player
+
+# Copy game files
+COPY game/ /game/
+
+WORKDIR /game
+
+EXPOSE 6080
+
+COPY entrypoint.sh /entrypoint.sh
+COPY run-game.sh /run-game.sh
+RUN chmod +x /entrypoint.sh /run-game.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,6 @@
+# Decompiler tooling — reverse-engineers the game's C#, not needed to run it.
+/Dockerfile
+/decompiled/
+
+# Local Claude Code agent config.
+/.claude/
