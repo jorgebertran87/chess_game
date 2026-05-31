@@ -55,6 +55,7 @@ RUN dpkg --add-architecture i386 && \
         libdrm-intel1 \
         libdrm2 libdrm2:i386 \
         x11-utils \
+        libpulse0 \
         winetricks cabextract \
     && rm -rf /var/lib/apt/lists/*
 

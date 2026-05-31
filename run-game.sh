@@ -66,6 +66,19 @@ if [ ! -f "$WINEPREFIX/.mono_suppressed" ]; then
     touch "$WINEPREFIX/.mono_suppressed"
 fi
 
+# --- Audio. When the host PulseAudio/PipeWire socket is mounted (PULSE_SERVER
+#     set by run-host.sh), select Wine's pulse driver so game sound reaches the
+#     host. Without it Wine falls back to the null ALSA device (silent).
+if [ -n "${PULSE_SERVER:-}" ]; then
+    if [ ! -f "$WINEPREFIX/.audio_pulse" ]; then
+        wine reg add "HKCU\\Software\\Wine\\Drivers" /v Audio /t REG_SZ /d pulse /f 2>/dev/null
+        touch "$WINEPREFIX/.audio_pulse"
+    fi
+    echo "[run-game] Audio: PulseAudio driver (PULSE_SERVER=$PULSE_SERVER)"
+else
+    echo "[run-game] Audio: none (no PULSE_SERVER); sound will be silent."
+fi
+
 # --- Seed Unity screen prefs (resolution + fullscreen mode). Re-applied whenever
 #     the requested geometry/mode changes, so resizing doesn't need a fresh prefix.
 PREF_SIG="${GAME_W}x${GAME_H}:${FS_MODE}"

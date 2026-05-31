@@ -31,6 +31,24 @@ for v in GAME_W GAME_H DESK_W DESK_H FS_MODE SCREEN_FS USE_DXVK \
     [ -n "${!v:-}" ] && envs+=(-e "$v=${!v}")
 done
 
+# Audio: route Wine's PulseAudio driver to the host's PipeWire/PulseAudio server
+# over its native unix socket (mounted in). On by default; AUDIO=0 to disable.
+# Snap Docker can bind-mount the runtime dir socket (unlike /usr/lib).
+AUDIO=${AUDIO:-1}
+audio=()
+PULSE_SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native"
+if [ "$AUDIO" = "1" ] && [ -S "$PULSE_SOCK" ]; then
+    audio=(-v "$PULSE_SOCK:/run/pulse/native" -e "PULSE_SERVER=unix:/run/pulse/native")
+    # Mount the PulseAudio cookie too, in case the server enforces it.
+    CK="${HOME}/.config/pulse/cookie"
+    [ -f "$CK" ] && audio+=(-v "$CK:/root/.config/pulse/cookie:ro" -e "PULSE_COOKIE=/root/.config/pulse/cookie")
+    echo "[run-host] Audio: routing to host PipeWire/PulseAudio ($PULSE_SOCK)."
+elif [ "$AUDIO" = "1" ]; then
+    echo "[run-host] Audio: no PulseAudio socket at $PULSE_SOCK — game will be silent." >&2
+else
+    echo "[run-host] Audio: disabled (AUDIO=0)."
+fi
+
 # /dev/dri is kept in both cases: on the NVIDIA path the Intel-backed X server
 # still presents the PRIME-copied frame, and it gives a graceful fallback.
 gpu=()
@@ -78,5 +96,5 @@ exec docker run --rm --name "$NAME" \
     -e DISPLAY="$DISPLAY" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$PREFIX_VOL":/root/.wine \
-    "${gpu[@]}" "${envs[@]}" \
+    "${audio[@]}" "${gpu[@]}" "${envs[@]}" \
     "$IMAGE"

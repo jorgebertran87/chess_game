@@ -32,6 +32,12 @@ Reset everything (force a clean first-run setup) with:
 docker volume rm game-wineprefix
 ```
 
+**Audio** is on by default: `run-host.sh` mounts the host's PulseAudio/PipeWire
+native socket (`$XDG_RUNTIME_DIR/pulse/native`) into the container and points
+Wine's `winepulse` driver at it, so game sound plays on your desktop. It needs a
+running PulseAudio or PipeWire (`pipewire-pulse`) server on the host — the usual
+case on a modern desktop. Disable it with `AUDIO=0 ./run-host.sh`.
+
 ## Prerequisites
 
 - **Docker**
@@ -95,6 +101,7 @@ Pass these with `-e NAME=value` (or as env vars to `run-host.sh`):
 | `DXVK_HUD`           | *(off)*     | DXVK overlay, e.g. `fps` or `fps,devinfo,gpuload`. Off by default (it costs frames). |
 | `WINEFSYNC` / `WINEESYNC` | `1` / `1` | Wine fast-sync backends. Leave on; harmless if the kernel lacks them. |
 | `PREFIX_VOL`         | `game-wineprefix` | Docker volume holding the Wine prefix + shader caches. |
+| `AUDIO`              | `1`         | `1` = route game sound to the host's PulseAudio/PipeWire. `0` = silent. |
 
 Examples:
 
