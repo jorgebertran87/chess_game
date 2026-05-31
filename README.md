@@ -21,10 +21,10 @@ Browser ──http://localhost:6080──▶ noVNC ─▶ x11vnc ─▶ Xwayland
 
 ```bash
 # 1. Build the image (first build downloads Wine + Mesa, takes a few minutes)
-docker build -f Dockerfile.wine -t game-wine .
+docker build -f Dockerfile.wine -t wine .
 
 # 2. Run it
-docker run -d --name game --device /dev/dri -p 6080:6080 game-wine
+docker run -d --name game --device /dev/dri -p 6080:6080 wine
 
 # 3. Open the game in your browser
 #    http://localhost:6080/vnc.html
@@ -61,10 +61,10 @@ Examples:
 
 ```bash
 # Native 4:3 resolution
-docker run -d --name game --device /dev/dri -p 6080:6080 -e GAME_W=1440 -e GAME_H=1080 game-wine
+docker run -d --name game --device /dev/dri -p 6080:6080 -e GAME_W=1440 -e GAME_H=1080 wine
 
 # Windowed (with title bar) instead of borderless
-docker run -d --name game --device /dev/dri -p 6080:6080 -e FS_MODE=3 -e SCREEN_FS=0 game-wine
+docker run -d --name game --device /dev/dri -p 6080:6080 -e FS_MODE=3 -e SCREEN_FS=0 wine
 ```
 
 ### Software mode
@@ -73,7 +73,7 @@ No GPU (or `/dev/dri` not available)? Run without the device and force the
 software path — slower, but works anywhere:
 
 ```bash
-docker run -d --name game -p 6080:6080 -e USE_GPU=0 game-wine
+docker run -d --name game -p 6080:6080 -e USE_GPU=0 wine
 ```
 
 If `/dev/dri/renderD128` is missing, the GPU path automatically falls back to
