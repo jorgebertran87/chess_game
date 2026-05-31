@@ -10,6 +10,28 @@ Wine + DXVK ─▶ host X server (Xwayland, DRI3/Present) ─▶ Intel GPU ─�
    (in the container)            (on the host, via the mounted X11 socket + /dev/dri)
 ```
 
+## Performance
+
+The launch path is tuned so the game starts fast and runs smoothly:
+
+- **wine-staging + fsync/esync.** Uses the kernel `futex_waitv` fast-sync path
+  (`WINEFSYNC=1`, esync fallback) instead of the slow server-side synchronization
+  — a big CPU win for the multithreaded Unity runtime. `run-host.sh` raises the
+  open-file limit, which esync needs.
+- **DXVK 2.4.1.** Uses `VK_EXT_graphics_pipeline_library` on Intel ANV, so shaders
+  compile in the background instead of hitching the frame.
+- **Persistent Wine prefix + shader caches.** The prefix, the DXVK pipeline state
+  cache, and the Mesa pipeline cache live in a named Docker volume
+  (`game-wineprefix`). The **first** launch does the one-time prefix/DXVK setup
+  (~30–60 s); **every launch after that is near-instant** and free of
+  recompile stutter. (Previously, `--rm` discarded all of this on every run.)
+
+Reset everything (force a clean first-run setup) with:
+
+```bash
+docker volume rm game-wineprefix
+```
+
 ## Prerequisites
 
 - **Docker**
@@ -69,6 +91,10 @@ Pass these with `-e NAME=value` (or as env vars to `run-host.sh`):
 | `USE_DXVK`           | `1`         | `1` = DXVK on the host GPU. `0` = software (WineD3D).          |
 | `FS_MODE`            | `3`         | Unity fullscreen mode: `3` = windowed (a window on your desktop), `1` = borderless. |
 | `SCREEN_FS`          | `0`         | Unity `-screen-fullscreen` flag (`1`/`0`).                     |
+| `GPU`                | `intel`     | `intel` = host iGPU via `/dev/dri`. `nvidia` = render on the NVIDIA dGPU (see below). |
+| `DXVK_HUD`           | *(off)*     | DXVK overlay, e.g. `fps` or `fps,devinfo,gpuload`. Off by default (it costs frames). |
+| `WINEFSYNC` / `WINEESYNC` | `1` / `1` | Wine fast-sync backends. Leave on; harmless if the kernel lacks them. |
+| `PREFIX_VOL`         | `game-wineprefix` | Docker volume holding the Wine prefix + shader caches. |
 
 Examples:
 
@@ -81,10 +107,54 @@ FS_MODE=1 SCREEN_FS=1 ./run-host.sh
 
 # Force software rendering
 USE_DXVK=0 ./run-host.sh
+
+# Render on the NVIDIA dGPU instead of the Intel iGPU (opt-in, see below)
+GPU=nvidia ./run-host.sh
 ```
 
 The game runs inside a Wine virtual-desktop window of `GAME_W`×`GAME_H`, so it
 stays a single, well-behaved window on your desktop regardless of mode.
+
+### NVIDIA dGPU (opt-in, experimental)
+
+`GPU=nvidia ./run-host.sh` renders the game on a discrete NVIDIA GPU via Vulkan
+and PRIME render offload — DXVK draws on the dGPU and the NVIDIA driver copies
+each frame back to the Intel-driven display. The default (`GPU=intel`) is
+unchanged.
+
+```
+DXVK ─▶ NVIDIA dGPU (Vulkan, NVIDIA_only) ─▶ PRIME copy ─▶ Intel-backed X server ─▶ desktop
+```
+
+Prerequisites on the **host**:
+
+1. The proprietary **NVIDIA driver** installed and the module loaded — verify
+   with `nvidia-smi -L`. On an Optimus laptop the dGPU is often powered down;
+   wake it / set a PRIME profile that keeps it available.
+2. The **NVIDIA Container Toolkit** installed and configured for Docker, with a
+   **CDI spec generated** so the GL/Vulkan (graphics) libraries are injected, not
+   just compute:
+   ```bash
+   sudo apt-get install -y nvidia-container-toolkit
+   sudo nvidia-ctk runtime configure --runtime=docker
+   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml   # graphics libs + ICD
+   sudo systemctl restart docker     # (snap Docker: sudo snap restart docker)
+   ```
+
+`run-host.sh` then starts the container with `--runtime=nvidia` (the portable
+choice — **snap-packaged Docker rejects `--gpus all`**) and forces Vulkan onto
+the dGPU (`__NV_PRIME_RENDER_OFFLOAD=1`, `__VK_LAYER_NV_optimus=NVIDIA_only`). If
+the NVIDIA graphics libraries aren't injected, the container falls back to the
+Intel GPU automatically.
+
+> **Status (verified):** on this machine the driver works and `--runtime=nvidia`
+> injects the GPU device + `nvidia-smi`, but **graphics injection was incomplete**
+> without a generated CDI spec — the NVIDIA Vulkan ICD failed to initialize, so
+> DXVK couldn't use the dGPU. Step 2's `cdi generate` is what supplies the
+> Vulkan ICD + the full, version-matched library set (assembling it by hand is
+> brittle and breaks on driver updates). PRIME-offload presentation to an
+> Intel-backed X server also varies by driver version — hence "experimental".
+> For a lightweight game the Intel default is more than enough.
 
 ## How it works
 

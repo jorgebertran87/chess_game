@@ -3,13 +3,39 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
 ENV DISPLAY=:0
-ENV PATH="/opt/wine-stable/bin:$PATH"
+# wine-staging installs under /opt/wine-staging (unlocks esync + fsync, the
+# low-level Wine sync fast paths that vanilla winehq-stable does not ship).
+ENV PATH="/opt/wine-staging/bin:$PATH"
 ENV MESA_GL_VERSION_OVERRIDE=4.5
 ENV MESA_GLSL_VERSION_OVERRIDE=450
 ENV LIBGL_ALWAYS_SOFTWARE=0
 # Point Vulkan loader directly to the Intel ANV driver
 ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json
 ENV MESA_LOADER_DRIVER_OVERRIDE=iris
+
+# --- Opt-in NVIDIA dGPU path (GPU=nvidia) -----------------------------------
+# These are no-ops on the default Intel path. They only take effect when the
+# container is started through the NVIDIA Container Toolkit (`--gpus all`),
+# which injects the host's NVIDIA driver libraries + device nodes at runtime.
+# `graphics` + `display` capabilities are required for Vulkan/GL (the toolkit's
+# default of compute+utility alone would NOT inject the render libraries).
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+
+# --- Performance env (consumed at runtime) -----------------------------------
+# fsync (futex2) is the fastest Wine synchronization backend; esync is the
+# fallback on kernels without futex_waitv. Both are no-ops if unsupported, so
+# they are safe to leave on. STAGING_SHARED_MEMORY cuts wineserver IPC traffic.
+ENV WINEESYNC=1
+ENV WINEFSYNC=1
+ENV STAGING_SHARED_MEMORY=1
+# Persist the DXVK pipeline state cache and the Mesa/ANV pipeline cache inside
+# the Wine-prefix volume so shaders are compiled once, not on every launch.
+ENV DXVK_STATE_CACHE_PATH=/root/.wine/cache/dxvk
+ENV MESA_SHADER_CACHE_DIR=/root/.wine/cache/mesa
+ENV __GL_SHADER_DISK_CACHE=1
+# Quiet DXVK: no log files, HUD off by default (opt in with -e DXVK_HUD=fps).
+ENV DXVK_LOG_LEVEL=none
 
 # Enable 32-bit and install Wine + the Mesa GPU stack. The game renders on the
 # *host's* X server (mounted in at runtime), so the container only needs the
@@ -32,16 +58,17 @@ RUN dpkg --add-architecture i386 && \
         winetricks cabextract \
     && rm -rf /var/lib/apt/lists/*
 
-# Add WineHQ repo and install Wine stable
+# Add WineHQ repo and install Wine staging (esync/fsync + perf patches).
 RUN wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
     wget -NP /etc/apt/sources.list.d/ \
         https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
     apt-get update && \
-    apt-get install -y --install-recommends winehq-stable && \
+    apt-get install -y --install-recommends winehq-staging && \
     rm -rf /var/lib/apt/lists/*
 
-# Download DXVK at build time (avoids slow runtime download)
-ENV DXVK_VERSION=1.10.3
+# Download DXVK at build time (avoids slow runtime download). DXVK 2.x uses
+# VK_EXT_graphics_pipeline_library on Intel ANV for stutter-free shader compile.
+ENV DXVK_VERSION=2.4.1
 RUN wget -q "https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VERSION}/dxvk-${DXVK_VERSION}.tar.gz" \
         -O /tmp/dxvk.tar.gz && \
     tar -xf /tmp/dxvk.tar.gz -C /opt && \

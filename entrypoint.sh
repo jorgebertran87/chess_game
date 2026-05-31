@@ -33,8 +33,28 @@ if ! xdpyinfo >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- Renderer: DXVK on the host GPU if the render node is present, else software.
-if [ -e /dev/dri/renderD128 ]; then
+# --- Renderer selection.
+export GPU=${GPU:-intel}
+if [ "$GPU" = "nvidia" ]; then
+    # Opt-in NVIDIA dGPU path. Driver libs + /dev/nvidia* are injected by the
+    # NVIDIA Container Toolkit (--gpus all); DXVK renders on the dGPU via Vulkan
+    # and the NVIDIA driver PRIME-copies the result to the Intel-driven display.
+    if [ -e /dev/nvidiactl ]; then
+        echo "[entrypoint] NVIDIA dGPU path; rendering on the NVIDIA GPU via DXVK (PRIME offload)."
+        echo "[entrypoint] GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+        export USE_DXVK=1
+    else
+        echo "[entrypoint] GPU=nvidia but no /dev/nvidiactl in the container." >&2
+        echo "[entrypoint]   Start with the NVIDIA Container Toolkit (--gpus all) and install" >&2
+        echo "[entrypoint]   nvidia-container-toolkit on the host. Falling back to Intel/software." >&2
+        export GPU=intel
+        if [ -e /dev/dri/renderD128 ]; then
+            echo "[entrypoint] Falling back to DXVK on the Intel GPU."
+        else
+            export USE_DXVK=0
+        fi
+    fi
+elif [ -e /dev/dri/renderD128 ]; then
     echo "[entrypoint] GPU render node found; using DXVK on the host GPU."
     echo "[entrypoint] GPU: $(glxinfo 2>/dev/null | grep 'OpenGL renderer' | sed 's/.*: //')"
 else

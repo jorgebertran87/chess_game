@@ -20,13 +20,31 @@ SCREEN_FS=${SCREEN_FS:-1}
 # and the Mono/Gecko auto-installers during prefix setup.
 export WINEDLLOVERRIDES="winemenubuilder.exe=d;mscoree=;mscorwks="
 
-# --- Initialize the Wine prefix once (timeout-guarded so it can't hang forever)
+# --- Persistent shader caches (live in the prefix volume, so they survive --rm).
+#     Compiling pipelines once instead of every launch is the difference between
+#     a stuttery cold start and a smooth warm one.
+export DXVK_STATE_CACHE_PATH=${DXVK_STATE_CACHE_PATH:-$WINEPREFIX/cache/dxvk}
+export MESA_SHADER_CACHE_DIR=${MESA_SHADER_CACHE_DIR:-$WINEPREFIX/cache/mesa}
+mkdir -p "$DXVK_STATE_CACHE_PATH" "$MESA_SHADER_CACHE_DIR" 2>/dev/null
+
+# --- Initialize the Wine prefix once (timeout-guarded so it can't hang forever).
+#     With a persisted prefix volume this runs only on the very first launch;
+#     every subsequent start skips straight to the game.
 if [ ! -f "$WINEPREFIX/.initialized" ]; then
-    echo "[run-game] Initializing Wine prefix at $WINEPREFIX ..."
+    echo "[run-game] Initializing Wine prefix at $WINEPREFIX (first run only) ..."
     timeout 150 wineboot --init 2>/dev/null || wineserver -w 2>/dev/null
     touch "$WINEPREFIX/.initialized"
     echo "[run-game] Wine prefix ready."
+else
+    # Prefix already initialized; if the Wine build changed (e.g. an image
+    # rebuild), let Wine quietly update the prefix in place.
+    WINE_VER_NOW=$(wine --version 2>/dev/null)
+    if [ "$(cat "$WINEPREFIX/.wine_version" 2>/dev/null)" != "$WINE_VER_NOW" ]; then
+        echo "[run-game] Wine changed to $WINE_VER_NOW; updating prefix ..."
+        timeout 120 wineboot -u 2>/dev/null || true
+    fi
 fi
+wine --version 2>/dev/null > "$WINEPREFIX/.wine_version"
 
 # --- Expose the game (copied to the Linux path /game) as C:\game.
 ln -sfn /game "$WINEPREFIX/drive_c/game"
@@ -61,26 +79,53 @@ if [ "$(cat "$WINEPREFIX/.screen_prefs" 2>/dev/null)" != "$PREF_SIG" ]; then
     echo "$PREF_SIG" > "$WINEPREFIX/.screen_prefs"
 fi
 
+# --- NVIDIA PRIME render offload (opt-in: GPU=nvidia). Forces the Vulkan device
+#     onto the NVIDIA dGPU and lets its driver copy the rendered frame back to the
+#     Intel-driven X server. The NVIDIA Optimus implicit layer (NVIDIA_only) hides
+#     the Intel GPU from Vulkan enumeration so DXVK can only pick the dGPU. Driver
+#     libraries + the ICD/layer JSON are injected by the NVIDIA Container Toolkit.
+if [ "${GPU:-intel}" = "nvidia" ]; then
+    export __NV_PRIME_RENDER_OFFLOAD=1
+    export __VK_LAYER_NV_optimus=NVIDIA_only
+    export __GLX_VENDOR_LIBRARY_NAME=nvidia
+    unset MESA_LOADER_DRIVER_OVERRIDE
+    # Use the injected NVIDIA Vulkan ICD instead of the baked-in Intel one.
+    NV_ICD=$(ls /usr/share/vulkan/icd.d/nvidia_icd*.json \
+                /etc/vulkan/icd.d/nvidia_icd*.json 2>/dev/null | head -1)
+    if [ -n "$NV_ICD" ]; then export VK_ICD_FILENAMES="$NV_ICD"; else unset VK_ICD_FILENAMES; fi
+    # Persist NVIDIA's GLSL/pipeline cache in the prefix volume too.
+    export __GL_SHADER_DISK_CACHE=1
+    export __GL_SHADER_DISK_CACHE_PATH="$MESA_SHADER_CACHE_DIR"
+    echo "[run-game] GPU target: NVIDIA dGPU (PRIME offload, ICD=${VK_ICD_FILENAMES:-auto})"
+fi
+
 # --- Pick the renderer.
 if [ "$USE_DXVK" = "1" ]; then
     # DXVK (D3D -> Vulkan -> Intel GPU). Requires a DRI3-capable X server
     # (Xwayland), which the GPU entrypoint path provides.
-    if [ ! -f "$WINEPREFIX/.dxvk_installed" ]; then
-        DXVK_DIR=$(find /opt -maxdepth 1 -name "dxvk-*" -type d | head -1)
+    # Version the marker so a DXVK upgrade in a rebuilt image reinstalls the
+    # DLLs into an already-persisted prefix instead of keeping the old ones.
+    DXVK_MARKER="$WINEPREFIX/.dxvk_installed_${DXVK_VERSION:-unknown}"
+    if [ ! -f "$DXVK_MARKER" ]; then
+        DXVK_DIR=$(find /opt -maxdepth 1 -name "dxvk-*" -type d | sort -V | tail -1)
         cp "$DXVK_DIR"/x64/*.dll "$WINEPREFIX/drive_c/windows/system32/" 2>/dev/null
         cp "$DXVK_DIR"/x32/*.dll "$WINEPREFIX/drive_c/windows/syswow64/" 2>/dev/null
-        touch "$WINEPREFIX/.dxvk_installed"
+        rm -f "$WINEPREFIX"/.dxvk_installed* 2>/dev/null
+        touch "$DXVK_MARKER"
+        echo "[run-game] Installed DXVK $(basename "$DXVK_DIR")"
     fi
     export WINEDLLOVERRIDES="mscoree,mscorwks=;d3d11=n,b;d3d10core=n,b;dxgi=n,b;d3d9=n,b"
-    export DXVK_HUD=${DXVK_HUD:-devinfo}
-    echo "[run-game] Renderer: DXVK (Vulkan / Intel GPU)"
+    # HUD off by default (it costs frames). Opt in with -e DXVK_HUD=fps,devinfo.
+    export DXVK_HUD=${DXVK_HUD:-}
+    GPU_LABEL=$([ "${GPU:-intel}" = "nvidia" ] && echo "NVIDIA dGPU" || echo "Intel GPU")
+    echo "[run-game] Renderer: DXVK ${DXVK_VERSION:-} (Vulkan / $GPU_LABEL)  fsync=${WINEFSYNC:-0} esync=${WINEESYNC:-0}"
 else
     # Built-in WineD3D (D3D -> OpenGL). Works on a plain X server (Xvfb).
     export WINEDLLOVERRIDES="mscoree,mscorwks=;d3d11=b;d3d10core=b;dxgi=b;d3d9=b"
     echo "[run-game] Renderer: WineD3D (OpenGL)"
 fi
 
-WINE_BIN=$(command -v wine64 2>/dev/null || command -v wine 2>/dev/null || echo /opt/wine-stable/bin/wine)
+WINE_BIN=$(command -v wine64 2>/dev/null || command -v wine 2>/dev/null || echo /opt/wine-staging/bin/wine)
 
 MODE_NAME=$([ "$FS_MODE" = "3" ] && echo windowed || echo borderless)
 echo "[run-game] Launching game ($MODE_NAME ${GAME_W}x${GAME_H} in ${DESK_W}x${DESK_H} desktop)..."
