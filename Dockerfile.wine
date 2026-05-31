@@ -2,7 +2,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEDEBUG=-all
-ENV DISPLAY=:99
+ENV DISPLAY=:0
 ENV PATH="/opt/wine-stable/bin:$PATH"
 ENV MESA_GL_VERSION_OVERRIDE=4.5
 ENV MESA_GLSL_VERSION_OVERRIDE=450
@@ -11,7 +11,10 @@ ENV LIBGL_ALWAYS_SOFTWARE=0
 ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/intel_icd.x86_64.json
 ENV MESA_LOADER_DRIVER_OVERRIDE=iris
 
-# Enable 32-bit and install Wine + full Mesa GPU stack + display tools
+# Enable 32-bit and install Wine + the Mesa GPU stack. The game renders on the
+# *host's* X server (mounted in at runtime), so the container only needs the
+# GPU/Vulkan client libraries and a couple of X11 client utilities (xdpyinfo for
+# the connection check, glxinfo for the GPU banner).
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -25,8 +28,7 @@ RUN dpkg --add-architecture i386 && \
         libegl-mesa0 libegl1 \
         libdrm-intel1 \
         libdrm2 libdrm2:i386 \
-        xvfb \
-        x11-utils x11vnc openbox novnc websockify \
+        x11-utils \
         winetricks cabextract \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,34 +48,16 @@ RUN wget -q "https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VERSION
     ls /opt/dxvk-${DXVK_VERSION}/ && \
     rm /tmp/dxvk.tar.gz
 
-
 # DXVK is pre-downloaded; prefix init and DXVK install happen at runtime
 # so Wine has a real display and correct WINEARCH=win64 from the start
 
 # Null ALSA device — stops Wine from blocking on missing audio hardware
 RUN echo 'pcm.default null\nctl.default null' > /etc/asound.conf
 
-# GPU display stack: a headless Wayland compositor (sway/wlroots) drives the
-# Intel *render node* (no DRM master needed, so it coexists with the host's
-# compositor) and runs Xwayland — a real X server exposing DRI3 + Present, which
-# is what DXVK needs to render on the GPU. wayvnc captures the sway output; grim
-# is handy for screenshots. A traditional Xorg+modesetting server can't be used
-# here: it needs DRM master, which the host GNOME session already holds.
-# (Separate layer so the large Wine/Mesa layer above stays cached.)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        sway xwayland wayvnc grim \
-    && rm -rf /var/lib/apt/lists/*
-
-# Unprivileged user for sway/Xwayland/Wine (sway refuses to run as root).
-RUN useradd -m -s /bin/bash player
-
 # Copy game files
 COPY game/ /game/
 
 WORKDIR /game
-
-EXPOSE 6080
 
 COPY entrypoint.sh /entrypoint.sh
 COPY run-game.sh /run-game.sh
